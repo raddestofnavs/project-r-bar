@@ -33,6 +33,43 @@ const SUBCATEGORIES = {
 
 const fmt = v => v == null || isNaN(v) ? "—" : `$${Number(v).toFixed(2)}`;
 
+// ── INVOICE → INVENTORY MATCHING ──
+// Normalize a product name into comparable tokens: lowercase, strip
+// punctuation, drop size/qty tokens (750ml, 1l, 12pk) and filler words.
+const STOPWORDS = ["the", "and", "of", "with"];
+function normalizeTokens(s) {
+  return (s || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter(w => w.length >= 2)
+    .filter(w => !/^\d+(ml|l|oz|cl|g|kg|pk|pack|ct)?$/.test(w))
+    .filter(w => !STOPWORDS.includes(w));
+}
+
+// Find the best inventory match for an invoice line item.
+// Priority: exact SKU → token-overlap score. Returns { match, confidence }.
+// Prefers precision (a wrong price update is worse than going to the queue).
+function matchInvoiceItem(invItem, items) {
+  const sku = (invItem.sku || "").toLowerCase().trim();
+  if (sku) {
+    const bySku = items.find(i => i.sku && i.sku.toLowerCase().trim() === sku);
+    if (bySku) return { match: bySku, confidence: "high" };
+  }
+  const invTokens = normalizeTokens(invItem.rawName);
+  if (invTokens.length === 0) return { match: null, confidence: null };
+  let best = null, bestScore = 0;
+  for (const it of items) {
+    const itTokens = normalizeTokens(it.name);
+    if (itTokens.length === 0) continue;
+    const overlap = itTokens.filter(t => invTokens.includes(t)).length;
+    const score = overlap / itTokens.length; // share of the inventory name found on the invoice line
+    if (score > bestScore) { bestScore = score; best = it; }
+  }
+  if (best && bestScore >= 0.6) return { match: best, confidence: bestScore >= 0.85 ? "high" : "low" };
+  return { match: null, confidence: null };
+}
+
 const S = {
   app: { background: BG, minHeight: "100vh", color: TEXT, fontFamily: "'SF Pro Display', -apple-system, BlinkMacSystemFont, sans-serif", maxWidth: 768, margin: "0 auto", paddingBottom: 80 },
   header: { background: SURFACE, borderBottom: `1px solid ${BORDER}`, padding: "16px 16px 0", position: "sticky", top: 0, zIndex: 50 },
@@ -161,16 +198,7 @@ export default function App() {
     const matched = [], unmatched = [];
 
     invoiceItems.forEach(item => {
-      const sku = (item.sku || "").toLowerCase().trim();
-      let match = sku ? items.find(i => i.sku && i.sku.toLowerCase().trim() === sku) : null;
-      if (!match && !sku) {
-        const words = (item.rawName || "").toLowerCase().split(/[\s,\/]+/).filter(w => w.length > 3);
-        match = items.find(ing => {
-          if (ing.sku) return false;
-          const ingWords = ing.name.toLowerCase().split(/[\s,\/]+/).filter(w => w.length > 3);
-          return ingWords.every(w => words.some(r => r.includes(w) || w.includes(r)));
-        });
-      }
+      const { match } = matchInvoiceItem(item, items);
       if (match) matched.push({ ...item, matchedId: match.id, matchedName: match.name });
       else unmatched.push({ rawName: item.rawName, sku: item.sku || "", packSize: item.packSize || "", supplier, unitCost: item.unitCost, unit: item.unit || "bottle", invoiceDate: date, qty: item.qty, category: item.category || "" });
     });
@@ -341,17 +369,8 @@ export default function App() {
 
     if (scanState === "review" && scanResult) {
       const previewMatches = (scanResult.items || []).map(item => {
-        const sku = (item.sku || "").toLowerCase().trim();
-        let match = sku ? items.find(i => i.sku && i.sku.toLowerCase().trim() === sku) : null;
-        if (!match && !sku) {
-          const words = (item.rawName || "").toLowerCase().split(/[\s,\/]+/).filter(w => w.length > 3);
-          match = items.find(i => {
-            if (i.sku) return false;
-            const iw = i.name.toLowerCase().split(/[\s,\/]+/).filter(w => w.length > 3);
-            return iw.every(w => words.some(r => r.includes(w) || w.includes(r)));
-          });
-        }
-        return { ...item, match };
+        const { match, confidence } = matchInvoiceItem(item, items);
+        return { ...item, match, matchConfidence: confidence };
       });
       const matchedCount = previewMatches.filter(i => i.match).length;
       const unmatchedCount = previewMatches.filter(i => !i.match).length;
@@ -383,7 +402,7 @@ export default function App() {
                   <div style={{ fontSize: 12, fontWeight: 700 }}>{item.rawName}</div>
                   {item.packSize && <div style={{ fontSize: 10, color: AMBER }}>{item.packSize}</div>}
                   {item.match
-                    ? <div style={{ fontSize: 11, color: GREEN, marginTop: 2 }}>→ {item.match.name}</div>
+                    ? <div style={{ fontSize: 11, color: item.matchConfidence === "low" ? AMBER : GREEN, marginTop: 2 }}>→ {item.match.name}{item.matchConfidence === "low" ? " (verify)" : ""}</div>
                     : <div style={{ fontSize: 11, color: AMBER, marginTop: 2 }}>→ Goes to queue</div>}
                 </div>
                 <div style={{ textAlign: "right" }}>
