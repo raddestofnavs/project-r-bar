@@ -89,11 +89,13 @@ export default function App() {
         supabase.from("bar_unmatched_items").select("*").eq("resolved", false).order("created_at", { ascending: false }),
         supabase.from("bar_count_sessions").select("*").order("counted_at", { ascending: false }).limit(20),
       ]);
+      const firstErr = itemsRes.error || invoicesRes.error || unmatchedRes.error || countsRes.error;
+      if (firstErr) throw firstErr;
       setItems(itemsRes.data || []);
       setInvoiceLog(invoicesRes.data || []);
       setUnmatchedItems(unmatchedRes.data || []);
       setCountHistory(countsRes.data || []);
-    } catch (e) { console.error(e); }
+    } catch (e) { console.error("Failed to load bar data:", e.message || e); }
     setLoading(false);
   }
 
@@ -174,42 +176,50 @@ export default function App() {
     });
 
     try {
-      const { data: inv } = await supabase.from("bar_invoices").insert({
+      const { data: inv, error: invErr } = await supabase.from("bar_invoices").insert({
         supplier, invoice_date: date, invoice_number: invoiceNumber || null,
         total: invoiceTotal || 0, item_count: invoiceItems.length,
         matched_count: matched.length, unmatched_count: unmatched.length
       }).select().single();
+      if (invErr) throw invErr;
 
       if (matched.length > 0) {
         await Promise.all(matched.map(async m => {
           if (m.unitCost > 0) {
-            await supabase.from("bar_items").update({ unit_cost: m.unitCost, supplier, updated_at: new Date().toISOString() }).eq("id", m.matchedId);
-            await supabase.from("bar_price_history").insert({ bar_item_id: m.matchedId, price: m.unitCost, supplier, source: "invoice" });
+            const { error: e1 } = await supabase.from("bar_items").update({ unit_cost: m.unitCost, supplier, updated_at: new Date().toISOString() }).eq("id", m.matchedId);
+            if (e1) throw e1;
+            const { error: e2 } = await supabase.from("bar_price_history").insert({ bar_item_id: m.matchedId, price: m.unitCost, supplier, source: "invoice" });
+            if (e2) throw e2;
             if (m.sku) {
               const existing = items.find(i => i.id === m.matchedId);
-              if (existing && !existing.sku) await supabase.from("bar_items").update({ sku: m.sku }).eq("id", m.matchedId);
+              if (existing && !existing.sku) {
+                const { error: e3 } = await supabase.from("bar_items").update({ sku: m.sku }).eq("id", m.matchedId);
+                if (e3) throw e3;
+              }
             }
           }
         }));
       }
 
       if (unmatched.length > 0) {
-        await supabase.from("bar_unmatched_items").insert(unmatched.map(u => ({
+        const { error: uErr } = await supabase.from("bar_unmatched_items").insert(unmatched.map(u => ({
           invoice_id: inv.id, raw_name: u.rawName, supplier: u.supplier || "",
           unit_cost: u.unitCost || 0, unit: u.unit || "bottle",
           invoice_date: u.invoiceDate || null, qty: u.qty || 1,
           category: u.category || "", sku: u.sku || "", pack_size: u.packSize || "",
         })));
+        if (uErr) throw uErr;
       }
 
       if (matched.length > 0 || unmatched.length > 0) {
-        await supabase.from("bar_invoice_items").insert([...matched, ...unmatched].map(item => ({
+        const { error: iErr } = await supabase.from("bar_invoice_items").insert([...matched, ...unmatched].map(item => ({
           invoice_id: inv.id, raw_name: item.rawName || "",
           sku: item.sku || "", qty: item.qty || 1, unit: item.unit || "bottle",
           unit_cost: item.unitCost || 0, total_cost: (item.unitCost || 0) * (item.qty || 1),
           matched_to: item.matchedName || "", matched_id: item.matchedId || null,
           category: item.category || "", pack_size: item.packSize || "",
         })));
+        if (iErr) throw iErr;
       }
 
       await loadAll();
@@ -227,20 +237,22 @@ export default function App() {
       return s + ((cases * caseSize) + bottles) * (i.unit_cost || 0);
     }, 0);
     try {
-      const { data: session } = await supabase.from("bar_count_sessions").insert({
+      const { data: session, error: sErr } = await supabase.from("bar_count_sessions").insert({
         counted_at: new Date().toISOString().split("T")[0],
         total_value: total, item_count: entered.length,
       }).select().single();
+      if (sErr) throw sErr;
       if (entered.length > 0) {
-        await supabase.from("bar_count_items").insert(entered.map(i => ({
+        const { error: ciErr } = await supabase.from("bar_count_items").insert(entered.map(i => ({
           session_id: session.id, bar_item_id: i.id,
           cases: parseFloat(draftCounts[i.id + "_case"] || 0),
           bottles: parseFloat(draftCounts[i.id + "_bottle"] || 0),
           unit_cost: i.unit_cost || 0,
         })));
+        if (ciErr) throw ciErr;
       }
       await loadAll();
-    } catch (e) { console.error(e); }
+    } catch (e) { console.error("Save count failed:", e.message || e); alert("Could not save count: " + (e.message || e)); return; }
     setDraftCounts({});
     setCountMode(false);
   }
@@ -566,7 +578,7 @@ export default function App() {
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
             <button style={{ ...S.outlineBtn, flex: 1, fontSize: 12, color: GOLD, borderColor: GOLD }} onClick={() => setCategorizeItem({ ...item, rawName: item.raw_name, packSize: item.pack_size })}>Categorize</button>
-            <button style={{ ...S.outlineBtn, fontSize: 12, color: MUTED }} onClick={async () => { await supabase.from("bar_unmatched_items").update({ resolved: true }).eq("id", item.id); setUnmatchedItems(u => u.filter(x => x.id !== item.id)); }}>Dismiss</button>
+            <button style={{ ...S.outlineBtn, fontSize: 12, color: MUTED }} onClick={async () => { const { error } = await supabase.from("bar_unmatched_items").update({ resolved: true }).eq("id", item.id); if (error) { alert("Could not dismiss: " + error.message); return; } setUnmatchedItems(u => u.filter(x => x.id !== item.id)); }}>Dismiss</button>
           </div>
         </div>
       ))}
@@ -584,19 +596,22 @@ export default function App() {
       try {
         const row = { name: form.name, category: form.category, subcategory: form.subcategory || "", unit: form.unit || "bottle", unit_cost: parseFloat(form.unit_cost) || 0, supplier: form.supplier || "", sku: form.sku || "", location: form.location || "", case_size: form.case_size ? parseFloat(form.case_size) : null, notes: form.notes || "", updated_at: new Date().toISOString() };
         if (isNew) {
-          const { data } = await supabase.from("bar_items").insert(row).select().single();
+          const { data, error } = await supabase.from("bar_items").insert(row).select().single();
+          if (error) throw error;
           setItems(prev => [...prev, data]);
         } else {
-          const { data } = await supabase.from("bar_items").update(row).eq("id", form.id).select().single();
+          const { data, error } = await supabase.from("bar_items").update(row).eq("id", form.id).select().single();
+          if (error) throw error;
           setItems(prev => prev.map(i => i.id === data.id ? data : i));
         }
-      } catch (e) { console.error(e); }
+      } catch (e) { console.error("Save item failed:", e.message || e); alert("Could not save item: " + (e.message || e)); setSaving(false); return; }
       setSaving(false);
       setEditItem(null);
     }
 
     async function del() {
-      await supabase.from("bar_items").delete().eq("id", form.id);
+      const { error } = await supabase.from("bar_items").delete().eq("id", form.id);
+      if (error) { console.error("Delete failed:", error.message); alert("Could not delete item: " + error.message); return; }
       setItems(prev => prev.filter(i => i.id !== form.id));
       setEditItem(null);
     }
@@ -676,14 +691,17 @@ export default function App() {
 
     async function addAsNew() {
       try {
-        const { data } = await supabase.from("bar_items").insert({
+        const { data, error } = await supabase.from("bar_items").insert({
           name, category, subcategory, unit, unit_cost: item.unit_cost, supplier: item.supplier || "", sku: sku || "", case_size: caseSize ? parseFloat(caseSize) : null, location,
         }).select().single();
-        await supabase.from("bar_price_history").insert({ bar_item_id: data.id, price: item.unit_cost, supplier: item.supplier, source: "invoice" });
-        await supabase.from("bar_unmatched_items").update({ resolved: true }).eq("id", item.id);
+        if (error) throw error;
+        const { error: phErr } = await supabase.from("bar_price_history").insert({ bar_item_id: data.id, price: item.unit_cost, supplier: item.supplier, source: "invoice" });
+        if (phErr) throw phErr;
+        const { error: umErr } = await supabase.from("bar_unmatched_items").update({ resolved: true }).eq("id", item.id);
+        if (umErr) throw umErr;
         setItems(prev => [...prev, data]);
         setUnmatchedItems(u => u.filter(x => x.id !== item.id));
-      } catch (e) { console.error(e); }
+      } catch (e) { console.error("Add to inventory failed:", e.message || e); alert("Could not add item: " + (e.message || e)); return; }
       setCategorizeItem(null);
     }
 
@@ -779,7 +797,7 @@ export default function App() {
           </div>
           <div style={{ display: "flex", gap: 10 }}>
             <div style={{ textAlign: "right" }}>
-              <div style={{ fontSize: 10, color: MUTED }}>Bar Value</div>
+              <div style={{ fontSize: 10, color: MUTED }}>Catalog Value</div>
               <div style={{ fontSize: 16, fontWeight: 800, color: GOLD }}>{fmt(totalValue)}</div>
             </div>
             <div style={{ textAlign: "right" }}>
@@ -798,16 +816,18 @@ export default function App() {
       </div>
 
       <div style={S.content}>
-        {activeTab === "Inventory" && <InventoryTab />}
-        {activeTab === "Invoices" && <InvoicesTab />}
+        {/* Hookless sections are called as functions (not <Comp/>) so they don't
+            remount on every App render — fixes e.g. the search box losing focus. */}
+        {activeTab === "Inventory" && InventoryTab()}
+        {activeTab === "Invoices" && InvoicesTab()}
         {activeTab === "Count" && <CountTab />}
         {activeTab === "Invoice Log" && <InvoiceLogTab />}
-        {activeTab === "Unmatched" && <UnmatchedTab />}
+        {activeTab === "Unmatched" && UnmatchedTab()}
       </div>
 
       {editItem && <EditModal />}
       {categorizeItem && <CategorizeModal />}
-      {viewInvoice && <InvoiceViewerModal />}
+      {viewInvoice && InvoiceViewerModal()}
     </div>
   );
 }

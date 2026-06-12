@@ -38,7 +38,7 @@ export default async function handler(req, res) {
     }
 
     const isImage = mediaType !== 'application/pdf'
-    const prompt = `You are a restaurant invoice parser. Extract ALL line items from this invoice. Return ONLY valid JSON, no markdown, no explanation:
+    const prompt = `You are a bar and beverage invoice parser (liquor, wine, beer suppliers). Extract ALL line items from this invoice. Return ONLY valid JSON, no markdown, no explanation:
 {
   "supplier": "string",
   "invoiceDate": "YYYY-MM-DD",
@@ -52,7 +52,7 @@ export default async function handler(req, res) {
       "unit": "each",
       "unitCost": 0.00,
       "totalCost": 0.00,
-      "category": "one of: Proteins, Dairy, Produce, Bread & Pasta, Grocery, Herbs & Spices, Condiments, Desserts, Beverages, Paper & Packaging, Cleaning Supplies, Kitchen Equipment"
+      "category": "one of: Spirits, Wine, Beer — Bottle/Can, Beer — Keg, Mixers & Garnishes, Bar Supplies"
     }
   ],
   "invoiceTotal": 0.00
