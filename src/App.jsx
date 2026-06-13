@@ -192,6 +192,37 @@ export default function App() {
     } catch (e) { setScanError(`Request failed: ${e.message}`); setScanState("error"); }
   }
 
+  // ── SCAN FROM CONNECTED SCANNER (via local bridge) ──
+  async function handleScanFromScanner() {
+    setScanState("scanning");
+    setScanError(null);
+    setScanPreview(null);
+    let base64, mediaType;
+    try {
+      const r = await fetch("http://localhost:8787/scan");
+      const d = await r.json();
+      if (!r.ok || d.error) throw new Error(d.error || `Bridge error ${r.status}`);
+      base64 = d.base64;
+      mediaType = d.mediaType || "image/jpeg";
+      setScanPreview(`data:${mediaType};base64,${base64}`);
+    } catch (e) {
+      setScanError(`Scanner not reachable: ${e.message}. Make sure the scan bridge is running on this Mac (node server.js in scan-bridge/).`);
+      setScanState("error");
+      return;
+    }
+    try {
+      const resp = await fetch("/api/scan-invoice", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ base64, mediaType }),
+      });
+      const data = await resp.json();
+      if (data.error) { setScanError(data.error); setScanState("error"); return; }
+      setScanResult(data);
+      setScanState("review");
+    } catch (e) { setScanError(`Request failed: ${e.message}`); setScanState("error"); }
+  }
+
   async function processInvoice(invoiceData) {
     const { supplier, invoiceDate, invoiceNumber, items: invoiceItems, invoiceTotal } = invoiceData;
     const date = invoiceDate || new Date().toISOString().split("T")[0];
@@ -347,6 +378,11 @@ export default function App() {
                 <span style={{ fontSize: 24 }}>📁</span>Upload File
               </div>
             </label>
+            <div onClick={handleScanFromScanner} style={{ flex: 1, cursor: "pointer" }}>
+              <div style={{ background: SURFACE2, border: `1px solid ${BORDER}`, borderRadius: 10, padding: "16px 10px", fontWeight: 700, fontSize: 13, display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+                <span style={{ fontSize: 24 }}>🖨️</span>Scan
+              </div>
+            </div>
           </div>
         </div>
       </div>
