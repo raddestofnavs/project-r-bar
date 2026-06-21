@@ -1,10 +1,15 @@
 import { useState, useEffect, useMemo } from "react";
 import { createClient } from "@supabase/supabase-js";
+import { matchInvoiceItem } from "./matching";
 
-const supabase = createClient(
-  import.meta.env.VITE_SUPABASE_URL,
-  import.meta.env.VITE_SUPABASE_ANON_KEY
-);
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+  throw new Error(
+    "Missing Supabase config: set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env.local (local dev) or the Vercel environment variables (deploy)."
+  );
+}
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const GOLD = "#c9a96e";
 const BG = "#080810";
@@ -33,42 +38,7 @@ const SUBCATEGORIES = {
 
 const fmt = v => v == null || isNaN(v) ? "—" : `$${Number(v).toFixed(2)}`;
 
-// ── INVOICE → INVENTORY MATCHING ──
-// Normalize a product name into comparable tokens: lowercase, strip
-// punctuation, drop size/qty tokens (750ml, 1l, 12pk) and filler words.
-const STOPWORDS = ["the", "and", "of", "with"];
-function normalizeTokens(s) {
-  return (s || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .split(/\s+/)
-    .filter(w => w.length >= 2)
-    .filter(w => !/^\d+(ml|l|oz|cl|g|kg|pk|pack|ct)?$/.test(w))
-    .filter(w => !STOPWORDS.includes(w));
-}
-
-// Find the best inventory match for an invoice line item.
-// Priority: exact SKU → token-overlap score. Returns { match, confidence }.
-// Prefers precision (a wrong price update is worse than going to the queue).
-function matchInvoiceItem(invItem, items) {
-  const sku = (invItem.sku || "").toLowerCase().trim();
-  if (sku) {
-    const bySku = items.find(i => i.sku && i.sku.toLowerCase().trim() === sku);
-    if (bySku) return { match: bySku, confidence: "high" };
-  }
-  const invTokens = normalizeTokens(invItem.rawName);
-  if (invTokens.length === 0) return { match: null, confidence: null };
-  let best = null, bestScore = 0;
-  for (const it of items) {
-    const itTokens = normalizeTokens(it.name);
-    if (itTokens.length === 0) continue;
-    const overlap = itTokens.filter(t => invTokens.includes(t)).length;
-    const score = overlap / itTokens.length; // share of the inventory name found on the invoice line
-    if (score > bestScore) { bestScore = score; best = it; }
-  }
-  if (best && bestScore >= 0.6) return { match: best, confidence: bestScore >= 0.85 ? "high" : "low" };
-  return { match: null, confidence: null };
-}
+// Invoice → inventory matching lives in ./matching.js (pure + unit-tested).
 
 const S = {
   app: { background: BG, minHeight: "100vh", color: TEXT, fontFamily: "'SF Pro Display', -apple-system, BlinkMacSystemFont, sans-serif", maxWidth: 768, margin: "0 auto", paddingBottom: 80 },
